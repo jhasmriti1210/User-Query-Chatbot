@@ -1,0 +1,14 @@
+import yaml
+
+# Load YAML config
+with open("config/config.yaml", "r") as file:
+    config = yaml.safe_load(file)
+
+# Example usage
+pdf_path = config["data"]["raw"]
+model_name = config["embeddings"]["model_name"]
+pinecone_index = config["pinecone"]["index_name"]
+
+print(f"PDFs are stored in: {pdf_path}")
+print(f"Using embedding model: {model_name}")
+print(f"Pinecone index name: {pinecone_index}")

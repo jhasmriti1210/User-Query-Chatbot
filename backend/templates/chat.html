@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arogyam - AI Medical Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- Markdown Support -->
+  </head>
+  <body
+    class="bg-gray-900 text-white flex items-center justify-center min-h-screen p-4"
+  >
+    <div class="w-full max-w-lg bg-gray-800 shadow-lg rounded-lg p-5">
+      <h1 class="text-xl font-semibold text-center text-blue-400 mb-4">
+        Arogyam - AI Medical Assistant
+      </h1>
+
+      <div
+        id="chat-box"
+        class="h-80 overflow-y-auto p-3 bg-gray-700 rounded-lg flex flex-col space-y-3"
+      >
+        <!-- Chat messages appear here -->
+      </div>
+
+      <div class="flex items-center space-x-2 mt-4">
+        <input
+          type="text"
+          id="user-input"
+          placeholder="Ask me about your symptoms..."
+          class="w-full p-2 text-black rounded-md focus:ring-2 focus:ring-blue-400 outline-none"
+        />
+        <button
+          onclick="sendMessage()"
+          class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md transition"
+        >
+          Send
+        </button>
+      </div>
+    </div>
+    <script>
+      function sendMessage() {
+        let userMessage = document.getElementById("user-input").value;
+
+        fetch("http://127.0.0.1:8080/get", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json", // ✅ Important
+          },
+          body: JSON.stringify({
+            msg: userMessage,
+            language: "en",
+          }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            console.log(data);
+            document.getElementById("response").innerText = data.response;
+          })
+          .catch((error) => console.error("Error:", error));
+      }
+    </script>
+
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {},
+        },
+      };
+    </script>
+  </body>
+</html>
