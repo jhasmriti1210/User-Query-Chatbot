@@ -9,12 +9,13 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
+
+# OpenAI import
+from langchain.chat_models import ChatOpenAI
 
 # Load environment variables
 load_dotenv()
@@ -22,40 +23,35 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-
-
+# Folders
 UPLOAD_FOLDER = "uploaded_docs"
 INDEX_FOLDER = "faiss_indexes"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(INDEX_FOLDER, exist_ok=True)
 
+# Env-vars
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT")
-HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not SYSTEM_PROMPT:
     raise ValueError("SYSTEM_PROMPT is not set in the .env file.")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is not set in the .env file.")
 
-if not HF_TOKEN:
-    raise ValueError("HUGGINGFACEHUB_API_TOKEN is not set in the .env file.")
-
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY is not set in the .env file.")
-
-# Initialize HuggingFace embeddings
-embeddings = HuggingFaceEmbeddings(
-    model_name='sentence-transformers/all-mpnet-base-v2'
+# Embeddings & LLM
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+llm = ChatOpenAI(
+    model_name="gpt-3.5-turbo",
+    openai_api_key=OPENAI_API_KEY,
+    temperature=0.0
 )
-
-# Initialize Gemini LLM (Google Generative AI)
-llm = ChatGoogleGenerativeAI(model="models/chat-bison-001", google_api_key=GEMINI_API_KEY)
-
 
 def pdf_loader(pdf_path):
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
-    if not docs:
-        raise ValueError("No content found in PDF")
+    # enforce per-PDF page limit
+    if len(docs) > 1000:
+        raise ValueError(f"PDF has {len(docs)} pages; exceeds 1,000-page limit.")
     return docs
 
 def text_chunking(docs):
@@ -64,59 +60,72 @@ def text_chunking(docs):
 
 @app.route("/")
 def home():
-    return "Welcome to the Medical Chatbot backend. Use /upload to upload PDFs and /query to ask questions."
+    return "Welcome to the RAG Pipeline service. Use /upload to upload up to 20 PDFs and /query to ask questions."
 
 @app.route("/upload", methods=["POST"])
-def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+def upload_files():
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files uploaded; use form-field name 'files'"}), 400
+    if len(files) > 20:
+        return jsonify({"error": "Maximum 20 documents allowed per upload."}), 400
 
-    file = request.files['file']
-    filename = secure_filename(file.filename)
-    if filename == "":
-        return jsonify({"error": "Empty filename"}), 400
+    saved = []
+    for file in files:
+        filename = secure_filename(file.filename or "")
+        if not filename:
+            continue
 
-    save_path = os.path.join(UPLOAD_FOLDER, filename)
-    file.save(save_path)
+        save_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(save_path)
 
-    try:
-        docs = pdf_loader(save_path)
-        chunks = text_chunking(docs)
+        try:
+            # load, chunk, index
+            docs = pdf_loader(save_path)
+            chunks = text_chunking(docs)
 
-        faiss_index = FAISS.from_documents(chunks, embeddings)
-        index_name = pathlib.Path(filename).stem
-        index_path = os.path.join(INDEX_FOLDER, index_name)
-        os.makedirs(index_path, exist_ok=True)
-        faiss_index.save_local(index_path)
+            faiss_index = FAISS.from_documents(chunks, embeddings)
+            index_name = pathlib.Path(filename).stem
+            index_path = os.path.join(INDEX_FOLDER, index_name)
+            os.makedirs(index_path, exist_ok=True)
+            faiss_index.save_local(index_path)
 
-        return jsonify({
-            "message": "Upload and indexing successful.",
-            "filename": filename
-        }), 200
+            saved.append(filename)
 
-    except Exception as e:
-        return jsonify({"error": f"Error processing PDF: {str(e)}"}), 500
+        except Exception as e:
+            return jsonify({"error": f"Error processing '{filename}': {str(e)}"}), 500
+
+    return jsonify({
+        "message": "Upload and indexing successful.",
+        "filenames": saved
+    }), 200
 
 @app.route("/query", methods=["POST"])
 def query_uploaded():
-    data = request.get_json()
+    data = request.get_json() or {}
     question = data.get("question", "").strip()
     filename = data.get("filename", "").strip()
 
     if not question:
-        return jsonify({"error": "Question is required"}), 400
+        return jsonify({"error": "Question is required."}), 400
     if not filename:
-        return jsonify({"error": "Filename is required"}), 400
+        return jsonify({"error": "Filename is required."}), 400
 
     index_name = pathlib.Path(filename).stem
     index_path = os.path.join(INDEX_FOLDER, index_name)
-
     if not os.path.exists(index_path):
-        return jsonify({"error": "No document found. Please upload it first."}), 400
+        return jsonify({"error": "No such document indexed. Please upload first."}), 400
 
     try:
-        faiss_index = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
-        retriever = faiss_index.as_retriever(search_type="similarity", search_kwargs={"k": 5})
+        faiss_index = FAISS.load_local(
+            index_path,
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
+        retriever = faiss_index.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 5}
+        )
 
         prompt_template = (
             SYSTEM_PROMPT + "\n\n"
@@ -139,10 +148,9 @@ def query_uploaded():
         )
 
         result = rag_chain.invoke({"input": question})
+        answer = result.get("output", "")
 
-        answer = result.get("output", "")  # sometimes the key is "output"
-
-        return jsonify({"answer": answer})
+        return jsonify({"answer": answer}), 200
 
     except Exception as e:
         return jsonify({"error": f"Error during query: {str(e)}"}), 500

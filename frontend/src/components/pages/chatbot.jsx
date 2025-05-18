@@ -15,7 +15,6 @@ export default function Chat() {
   const [file, setFile] = useState(null);
   const [uploadedFilename, setUploadedFilename] = useState(null);
 
-  // Fixed language (removed selector)
   const language = "en-US";
 
   useEffect(() => {
